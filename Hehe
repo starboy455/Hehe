@@ -1,0 +1,336 @@
+-- SnipeShot | rage_toggle.lua
+-- rage build — nearest enemy aimbot, team excluded, silent, ESP, auto
+-- plus external on/off toggle button
+
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+local cfg = {
+    aimbot = true,
+    silent = true,
+    fov = 2000,
+    smooth = 0.0,
+    part = "Head",
+    teamCheck = true,
+    visibleCheck = false,
+    autoFire = true,
+    autoFireDelay = 0.05,
+    esp = true,
+    espHealth = true,
+    espTracer = true,
+    espColor = Color3.fromRGB(255, 40, 120),
+    walkSpeed = 0,
+    jumpPower = 0,
+}
+
+local function getPart(plr)
+    local c = plr.Character
+    if not c then return nil end
+    return c:FindFirstChild(cfg.part)
+        or c:FindFirstChild("Head")
+        or c:FindFirstChild("UpperTorso")
+        or c:FindFirstChild("Torso")
+        or (c:FindFirstChildOfClass("Humanoid") and c.Humanoid.RootPart)
+end
+
+local function getRoot(plr)
+    local c = plr.Character
+    return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+end
+
+local function isAlive(plr)
+    local c = plr.Character
+    if not c then return false end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    return h and h.Health > 0
+end
+
+local function isTeammate(plr)
+    if not cfg.teamCheck then return false end
+    if plr == LocalPlayer then return true end
+    local myTeam, theirTeam = LocalPlayer.Team, plr.Team
+    if myTeam ~= nil and theirTeam ~= nil then
+        return myTeam == theirTeam
+    end
+    local function tc(p)
+        local t = p.Team
+        return t and t.TeamColor
+    end
+    local mc, othc = tc(LocalPlayer), tc(plr)
+    return mc ~= nil and mc == othc
+end
+
+local function hasLOS(part)
+    if not cfg.visibleCheck then return true end
+    local hit = Workspace:FindPartOnRayWithIgnoreList(
+        Ray.new(Camera.CFrame.Position, part.Position - Camera.CFrame.Position),
+        { LocalPlayer.Character, part.Parent }
+    )
+    return hit == nil
+end
+
+local function getBestTarget()
+    local myRoot = getRoot(LocalPlayer)
+    if not myRoot then return nil, nil end
+    local myPos = myRoot.Position
+    local best, bestPart, bestDist = nil, nil, math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and isAlive(plr) and not isTeammate(plr) then
+            local part = getPart(plr)
+            if part then
+                local d = (part.Position - myPos).Magnitude
+                if d <= cfg.fov and d < bestDist and hasLOS(part) then
+                    best, bestPart, bestDist = plr, part, d
+                end
+            end
+        end
+    end
+    return best, bestPart
+end
+
+local function stepAim()
+    if not cfg.aimbot then return end
+    local _, part = getBestTarget()
+    if not part then return end
+    if cfg.silent then
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, part.Position)
+        return
+    end
+    local desired = CFrame.new(Camera.CFrame.Position, part.Position)
+    if cfg.smooth > 0 then
+        local a = math.clamp(1 - cfg.smooth, 0.05, 1)
+        Camera.CFrame = Camera.CFrame:Lerp(desired, a)
+    else
+        Camera.CFrame = desired
+    end
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root then
+        local flat = Vector3.new(part.Position.X, root.Position.Y, part.Position.Z)
+        local tCF = CFrame.new(root.Position, flat)
+        root.CFrame = cfg.smooth > 0
+            and root.CFrame:Lerp(tCF, math.clamp(1 - cfg.smooth, 0.05, 1))
+            or tCF
+    end
+end
+
+local espBoxes, espTracers, espHealthBars = {}, {}, {}
+
+local function makeESP(plr)
+    local part = getPart(plr)
+    if not part then return end
+    local box = Instance.new("BoxHandleAdornment")
+    box.Size = Vector3.new(2.4, 3.2, 1)
+    box.Adornee = part
+    box.AlwaysOnTop = true
+    box.ZIndex = 10
+    box.Transparency = 0.35
+    box.Color3 = cfg.espColor
+    box.Parent = part
+    espBoxes[plr] = box
+    if cfg.espTracer then
+        local line = Instance.new("LineHandleAdornment")
+        line.Adornee = part
+        line.Length = 0
+        line.Thickness = 2
+        line.AlwaysOnTop = true
+        line.Color3 = cfg.espColor
+        line.Parent = part
+        espTracers[plr] = line
+    end
+    if cfg.espHealth then
+        local hb = Instance.new("BillboardGui")
+        hb.Size = UDim2.new(0, 60, 0, 6)
+        hb.StudsOffset = Vector3.new(0, 3, 0)
+        hb.AlwaysOnTop = true
+        hb.Adornee = part
+        hb.Parent = part
+        local bg = Instance.new("Frame")
+        bg.Size = UDim2.new(1, 0, 1, 0)
+        bg.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        bg.BorderSizePixel = 0
+        bg.Parent = hb
+        local fill = Instance.new("Frame")
+        fill.Size = UDim2.new(1, 0, 1, 0)
+        fill.BackgroundColor3 = Color3.fromRGB(80, 255, 120)
+        fill.BorderSizePixel = 0
+        fill.Parent = bg
+        espHealthBars[plr] = { gui = hb, fill = fill }
+    end
+end
+
+local function clearESP()
+    for _, b in pairs(espBoxes) do if b then b:Destroy() end end
+    for _, l in pairs(espTracers) do if l then l:Destroy() end end
+    for _, h in pairs(espHealthBars) do if h.gui then h.gui:Destroy() end end
+    espBoxes, espTracers, espHealthBars = {}, {}, {}
+end
+
+local function updateESP()
+    if not cfg.esp then return end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and isAlive(plr) and not isTeammate(plr) then
+            if not espBoxes[plr] then makeESP(plr) end
+            local hb = espHealthBars[plr]
+            local c = plr.Character
+            if hb and c then
+                local hum = c:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    local pct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+                    hb.fill.Size = UDim2.new(pct, 0, 1, 0)
+                    hb.fill.BackgroundColor3 = Color3.fromRGB(
+                        math.floor(255 * (1 - pct)),
+                        math.floor(255 * pct), 80)
+                end
+            end
+        end
+    end
+end
+
+local function applyMovement()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if cfg.walkSpeed > 0 then hum.WalkSpeed = cfg.walkSpeed end
+    if cfg.jumpPower > 0 then
+        pcall(function() hum.UseJumpPower = true end)
+        hum.JumpPower = cfg.jumpPower
+    end
+end
+
+-- ===== external aimbot toggle button =====
+local toggleGui = Instance.new("ScreenGui")
+toggleGui.Name = "SnipeShotAimToggle"
+toggleGui.ResetOnSpawn = false
+toggleGui.IgnoreGuiInset = true
+toggleGui.DisplayOrder = 999
+toggleGui.Parent = game:GetService("CoreGui")
+
+local aimBtn = Instance.new("TextButton")
+aimBtn.Size = UDim2.new(0, 120, 0, 34)
+aimBtn.Position = UDim2.new(0, 20, 0.5, -17)
+aimBtn.BackgroundColor3 = Color3.fromRGB(255, 40, 120)
+aimBtn.BorderSizePixel = 0
+aimBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+aimBtn.Font = Enum.Font.Code
+aimBtn.TextSize = 14
+aimBtn.Text = "AIM: ON"
+aimBtn.AutoButtonColor = false
+aimBtn.Active = true
+aimBtn.Draggable = true
+aimBtn.Parent = toggleGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 6)
+corner.Parent = aimBtn
+
+local function refreshAimButton()
+    if cfg.aimbot then
+        aimBtn.Text = "AIM: ON"
+        aimBtn.BackgroundColor3 = Color3.fromRGB(255, 40, 120)
+    else
+        aimBtn.Text = "AIM: OFF"
+        aimBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    end
+end
+
+aimBtn.MouseButton1Click:Connect(function()
+    cfg.aimbot = not cfg.aimbot
+    refreshAimButton()
+end)
+
+-- sync if toggled from Rayfield menu
+task.spawn(function()
+    while toggleGui.Parent do
+        refreshAimButton()
+        task.wait(0.2)
+    end
+end)
+
+-- ===== main loop =====
+local lastFire = 0
+
+RunService.RenderStepped:Connect(function()
+    stepAim()
+    updateESP()
+    if not cfg.esp and next(espBoxes) then clearESP() end
+    applyMovement()
+
+    if cfg.autoFire and tick() - lastFire > cfg.autoFireDelay then
+        local _, part = getBestTarget()
+        if part then
+            lastFire = tick()
+            local char = LocalPlayer.Character
+            local tool = char and char:FindFirstChildOfClass("Tool")
+            if tool then
+                local remote = tool:FindFirstChild("Fire")
+                    or tool:FindFirstChild("Shoot")
+                    or tool:FindFirstChildWhichIsA("RemoteEvent", true)
+                if remote then
+                    pcall(function() remote:FireServer(part.Position) end)
+                end
+            end
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(plr)
+    if espBoxes[plr] then espBoxes[plr]:Destroy(); espBoxes[plr] = nil end
+    if espTracers[plr] then espTracers[plr]:Destroy(); espTracers[plr] = nil end
+    if espHealthBars[plr] then espHealthBars[plr].gui:Destroy(); espHealthBars[plr] = nil end
+end)
+
+-- ===== Rayfield UI =====
+local Window = Rayfield:CreateWindow({
+    Name = "SnipeShot | Rage",
+    LoadingTitle = "SnipeShot",
+    LoadingSubtitle = "rage mode",
+    ConfigurationSaving = { Enabled = true, FolderName = "SnipeShot", FileName = "rage" },
+    KeySystem = false,
+})
+
+local aimTab = Window:CreateTab("Aimbot", 4483362458)
+aimTab:CreateToggle({ Name = "Aimbot", CurrentValue = true, Flag = "aimbot",
+    Callback = function(v) cfg.aimbot = v; refreshAimButton() end })
+aimTab:CreateToggle({ Name = "Silent Aim", CurrentValue = true, Flag = "silent",
+    Callback = function(v) cfg.silent = v end })
+aimTab:CreateSlider({ Name = "Range (studs)", Range = { 20, 5000 }, Increment = 20, Suffix = " st",
+    CurrentValue = cfg.fov, Flag = "range", Callback = function(v) cfg.fov = v end })
+aimTab:CreateSlider({ Name = "Smoothing", Range = { 0, 100 }, Increment = 1, Suffix = "%",
+    CurrentValue = 0, Flag = "smooth", Callback = function(v) cfg.smooth = v / 100 end })
+aimTab:CreateDropdown({ Name = "Target Part",
+    Options = { "Head", "UpperTorso", "Torso", "HumanoidRootPart" },
+    CurrentOption = { cfg.part }, Flag = "part",
+    Callback = function(v) cfg.part = v[1] end })
+aimTab:CreateToggle({ Name = "Auto Fire", CurrentValue = true, Flag = "autofire",
+    Callback = function(v) cfg.autoFire = v end })
+aimTab:CreateSlider({ Name = "Auto Fire Delay", Range = { 10, 500 }, Increment = 10, Suffix = "ms",
+    CurrentValue = 50, Flag = "afdelay", Callback = function(v) cfg.autoFireDelay = v / 1000 end })
+aimTab:CreateToggle({ Name = "Visible Check", CurrentValue = false, Flag = "vischeck",
+    Callback = function(v) cfg.visibleCheck = v end })
+aimTab:CreateToggle({ Name = "Team Check", CurrentValue = true, Flag = "teamcheck",
+    Callback = function(v) cfg.teamCheck = v end })
+
+local visualTab = Window:CreateTab("Visuals", 4483362458)
+visualTab:CreateToggle({ Name = "ESP", CurrentValue = true, Flag = "esp",
+    Callback = function(v) cfg.esp = v end })
+visualTab:CreateToggle({ Name = "Health Bars", CurrentValue = true, Flag = "esphealth",
+    Callback = function(v) cfg.espHealth = v end })
+visualTab:CreateToggle({ Name = "Tracers", CurrentValue = true, Flag = "esptracer",
+    Callback = function(v) cfg.espTracer = v end })
+visualTab:CreateColorPicker({ Name = "ESP Color", Color = cfg.espColor, Flag = "espcolor",
+    Callback = function(v) cfg.espColor = v end })
+
+local miscTab = Window:CreateTab("Misc", 4483362458)
+miscTab:CreateSlider({ Name = "WalkSpeed", Range = { 0, 300 }, Increment = 5, Suffix = " ws",
+    CurrentValue = 0, Flag = "ws", Callback = function(v) cfg.walkSpeed = v end })
+miscTab:CreateSlider({ Name = "JumpPower", Range = { 0, 300 }, Increment = 5, Suffix = " jp",
+    CurrentValue = 0, Flag = "jp", Callback = function(v) cfg.jumpPower = v end })
+
+Rayfield:LoadConfiguration()
